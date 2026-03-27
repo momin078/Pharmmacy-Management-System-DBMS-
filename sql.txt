@@ -1,0 +1,253 @@
+-- =========================================================
+-- Fresh full database: pharmacy (merged & code-compatible)
+-- =========================================================
+DROP DATABASE IF EXISTS pharmacy;
+CREATE DATABASE pharmacy
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_general_ci;
+USE pharmacy;
+
+SET FOREIGN_KEY_CHECKS = 0;
+
+-- =========================================================
+-- Reference Tables
+-- =========================================================
+DROP TABLE IF EXISTS categories;
+CREATE TABLE categories (
+  id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name       VARCHAR(120) NOT NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_category_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS companies;
+CREATE TABLE companies (
+  id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name       VARCHAR(160) NOT NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_company_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =========================================================
+-- Core Actors
+-- =========================================================
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (
+  id         VARCHAR(50)  NOT NULL,         -- VARCHAR (checkout.php uses bind_param("s"))
+  name       VARCHAR(120) NOT NULL,
+  email      VARCHAR(160) NULL,
+  contact    VARCHAR(60)  NULL,             -- phone equivalent
+  address    VARCHAR(255) NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS employee;
+CREATE TABLE employee (
+  emp_id       VARCHAR(50)  NOT NULL,
+  emp_name     VARCHAR(120) NOT NULL,
+  emp_email    VARCHAR(160) NULL,
+  emp_phone    VARCHAR(60)  NULL,
+  emp_position VARCHAR(60)  NULL,
+  emp_address  VARCHAR(255) NULL,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (emp_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =========================================================
+-- Medicines (UNIQUE on name) + FK to categories(name), companies(name)
+-- =========================================================
+DROP TABLE IF EXISTS medicines;
+CREATE TABLE medicines (
+  id               INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  name             VARCHAR(200)  NOT NULL,
+  category         VARCHAR(120)  NOT NULL,
+  `group`          VARCHAR(120)  NOT NULL,
+  company          VARCHAR(160)  NOT NULL,
+
+  batch_no         VARCHAR(50)   NULL,
+  manufacture_date DATE          NULL,
+  expire_date      DATE          NULL,
+
+  dosage_form      ENUM('Tablet','Capsule','Syrup','Injection','Ointment','Other')
+                                 NOT NULL DEFAULT 'Tablet',
+  strength         VARCHAR(50)   NULL,
+  price            DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  quantity         INT UNSIGNED  NOT NULL DEFAULT 0,
+  reorder_level    INT           NOT NULL DEFAULT 0,
+  storage_info     VARCHAR(255)  NULL,
+  prescription_required TINYINT(1) NOT NULL DEFAULT 0,
+  barcode          VARCHAR(100)  NULL,
+
+  details          TEXT          NULL,
+  image            VARCHAR(255)  NULL,
+  status           ENUM('ACTIVE','DISCONTINUED') NOT NULL DEFAULT 'ACTIVE',
+  sold_count       INT UNSIGNED  NOT NULL DEFAULT 0,
+  view_count       INT UNSIGNED  NOT NULL DEFAULT 0,
+
+  created_by       VARCHAR(50)   NULL,
+  created_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_med_name (name),
+
+  INDEX idx_category (category),
+  INDEX idx_company  (company),
+  INDEX idx_status   (status),
+  INDEX idx_expire   (expire_date),
+  INDEX idx_created  (created_at),
+  INDEX idx_barcode  (barcode),
+
+  FULLTEXT INDEX ft_medicines (name, category, `group`, company, details),
+
+  CONSTRAINT fk_medicines_category
+    FOREIGN KEY (category) REFERENCES categories(name)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_medicines_company
+    FOREIGN KEY (company)  REFERENCES companies(name)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =========================================================
+-- Orders / Checkout (matches your checkout.php)
+-- =========================================================
+DROP TABLE IF EXISTS orders;
+CREATE TABLE orders (
+  id               BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  user_id          VARCHAR(50)      NULL,                      -- FK -> users.id (VARCHAR)
+  user_name        VARCHAR(120)     NOT NULL,
+  user_email       VARCHAR(160)     NOT NULL,
+  user_phone       VARCHAR(60)      NOT NULL,
+  user_address     VARCHAR(255)     NOT NULL,
+
+  payment_method   VARCHAR(50)      NULL,                      -- 'Card'/'Mobile Banking'/'Cash on Delivery'
+  transaction_id   VARCHAR(120)     NULL,
+
+  subtotal         DECIMAL(12,2)    NOT NULL DEFAULT 0.00,
+  vat              DECIMAL(12,2)    NOT NULL DEFAULT 0.00,
+  delivery_charge  DECIMAL(12,2)    NOT NULL DEFAULT 0.00,
+  grand_total      DECIMAL(12,2)    NOT NULL DEFAULT 0.00,
+
+  total            DECIMAL(12,2)    NOT NULL DEFAULT 0.00,     -- legacy mirror of grand_total
+  status           ENUM('PENDING','PAID','CANCELLED') NOT NULL DEFAULT 'PENDING',
+
+  created_at       DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_orders_user (user_id),
+  CONSTRAINT fk_orders_user
+    FOREIGN KEY (user_id) REFERENCES users(id)
+    ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Keep total in sync with grand_total (optional but handy)
+DROP TRIGGER IF EXISTS bi_orders_total;
+DROP TRIGGER IF EXISTS bu_orders_total;
+DELIMITER $$
+CREATE TRIGGER bi_orders_total BEFORE INSERT ON orders
+FOR EACH ROW BEGIN
+  IF NEW.grand_total IS NOT NULL THEN SET NEW.total = NEW.grand_total; END IF;
+END$$
+CREATE TRIGGER bu_orders_total BEFORE UPDATE ON orders
+FOR EACH ROW BEGIN
+  IF NEW.grand_total IS NOT NULL THEN SET NEW.total = NEW.grand_total; END IF;
+END$$
+DELIMITER ;
+
+-- =========================================================
+-- Order Items (name, unit_price, qty, line_total)
+-- =========================================================
+DROP TABLE IF EXISTS order_items;
+CREATE TABLE order_items (
+  id           BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  order_id     BIGINT UNSIGNED  NOT NULL,
+  medicine_id  INT UNSIGNED     NOT NULL,
+  name         VARCHAR(200)     NOT NULL,
+  unit_price   DECIMAL(10,2)    NOT NULL DEFAULT 0.00,
+  qty          INT UNSIGNED     NOT NULL DEFAULT 1,
+  line_total   DECIMAL(12,2)    NOT NULL DEFAULT 0.00,
+  created_at   DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_oi_order (order_id),
+  KEY idx_oi_med   (medicine_id),
+  CONSTRAINT fk_oi_order
+    FOREIGN KEY (order_id)    REFERENCES orders(id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_oi_medicine
+    FOREIGN KEY (medicine_id) REFERENCES medicines(id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- =========================================================
+-- Legacy Sales (optional)
+-- =========================================================
+DROP TABLE IF EXISTS sales;
+CREATE TABLE sales (
+  sale_id       BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id       VARCHAR(50)     NULL,
+  medicine_id   INT UNSIGNED    NULL,
+  medicine_name VARCHAR(200)    NULL,
+  employee_id   VARCHAR(50)     NULL,
+  quantity      INT UNSIGNED    NOT NULL DEFAULT 1,
+  price         DECIMAL(10,2)   NOT NULL DEFAULT 0.00,
+  total         DECIMAL(12,2)   NOT NULL DEFAULT 0.00,
+  sale_date     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (sale_id),
+  KEY idx_sales_user (user_id),
+  KEY idx_sales_med  (medicine_id),
+  CONSTRAINT fk_sales_user
+    FOREIGN KEY (user_id)     REFERENCES users(id)
+    ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT fk_sales_med
+    FOREIGN KEY (medicine_id) REFERENCES medicines(id)
+    ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT fk_sales_emp
+    FOREIGN KEY (employee_id) REFERENCES employee(emp_id)
+    ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- =========================================================
+-- Convenience View (users.contact -> phone alias)
+-- =========================================================
+DROP VIEW IF EXISTS vw_users_checkout;
+CREATE VIEW vw_users_checkout AS
+SELECT
+  id,
+  name,
+  email,
+  contact AS phone,
+  address,
+  created_at
+FROM users;
+
+-- =========================================================
+-- Seed Data (minimal)
+-- =========================================================
+INSERT INTO categories (name) VALUES
+ ('Pharma'),('Baby & Mom Care'),('Herbal'),('Beauty'),('Dental & Oral Care')
+ON DUPLICATE KEY UPDATE name=VALUES(name);
+
+INSERT INTO companies (name) VALUES
+ ('Square Pharmaceuticals'),('ACME Pharma Ltd'),
+ ('JAYSON PHARMACEUTICALS LTD'),('Healthcare BD')
+ON DUPLICATE KEY UPDATE name=VALUES(name);
+
+-- sample users (VARCHAR id)
+INSERT INTO users (id,name,email,contact,address) VALUES
+ ('U-101','Demo User','demo@example.com','01700000000','Dhaka, BD')
+ON DUPLICATE KEY UPDATE name=VALUES(name), email=VALUES(email), contact=VALUES(contact), address=VALUES(address);
+
+-- sample medicines
+INSERT INTO medicines
+(name, category, `group`, company, price, quantity, dosage_form, strength, details, status, expire_date)
+VALUES
+('Paracetamol 500mg', 'Pharma', 'PARACETAMOL', 'Square Pharmaceuticals', 1.50, 200, 'Tablet', '500mg', 'Pain & fever reducer', 'ACTIVE', '2026-05-31'),
+('Zinc Syrup 100ml', 'Baby & Mom Care', 'ZINC', 'ACME Pharma Ltd', 80.00, 60, 'Syrup', '10mg/5ml', 'Supplement', 'ACTIVE', '2026-01-15')
+ON DUPLICATE KEY UPDATE
+ quantity = quantity + VALUES(quantity),
+ price = VALUES(price),
+ expire_date = VALUES(expire_date),
+ details = VALUES(details);
